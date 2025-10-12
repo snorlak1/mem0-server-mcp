@@ -5,6 +5,7 @@ A production-ready FastAPI server providing memory storage and retrieval
 with support for multiple LLM providers (Ollama, OpenAI, Anthropic).
 """
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -58,6 +59,60 @@ app = FastAPI(
     description="A production-ready REST API for managing and searching memories for AI Agents and Apps.",
     version="1.0.0",
 )
+
+# Background Neo4j sync with retry logic
+async def _sync_to_neo4j_with_retry(
+    memory_id: str,
+    memory_text: str,
+    user_id: str,
+    metadata: Optional[Dict[str, Any]] = None,
+    max_retries: int = None
+):
+    """
+    Sync memory to Neo4j with exponential backoff retry.
+    Runs in background, non-blocking.
+
+    Retry Schedule (default 7 attempts, configurable via NEO4J_SYNC_MAX_RETRIES):
+    - Attempt 1: Immediate
+    - Attempt 2: Wait 1s
+    - Attempt 3: Wait 2s
+    - Attempt 4: Wait 4s
+    - Attempt 5: Wait 8s
+    - Attempt 6: Wait 16s
+    - Attempt 7: Wait 32s
+    Total max wait time: ~63 seconds
+    """
+    # Use config value if not specified
+    if max_retries is None:
+        max_retries = config.NEO4J_SYNC_MAX_RETRIES
+
+    for attempt in range(max_retries):
+        try:
+            # Run sync in thread pool (Neo4j driver is synchronous)
+            await asyncio.to_thread(
+                GRAPH_INTELLIGENCE.sync_memory_to_neo4j,
+                memory_id=memory_id,
+                memory_text=memory_text,
+                user_id=user_id,
+                metadata=metadata
+            )
+            logger.info(f"✅ Auto-synced memory {memory_id} to Neo4j (attempt {attempt + 1}/{max_retries})")
+            return  # Success
+        except Exception as sync_error:
+            wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s
+            if attempt < max_retries - 1:
+                logger.warning(
+                    f"⚠️  Neo4j sync failed for {memory_id} (attempt {attempt + 1}/{max_retries}): {sync_error}. "
+                    f"Retrying in {wait_time}s..."
+                )
+                await asyncio.sleep(wait_time)
+            else:
+                logger.error(
+                    f"❌ Neo4j sync failed for {memory_id} after {max_retries} attempts. "
+                    f"Total wait time: ~{sum(2**i for i in range(max_retries))}s. "
+                    f"Final error: {sync_error}"
+                )
+
 
 # Request/Response Models
 class Message(BaseModel):
@@ -117,8 +172,13 @@ def set_config(config_data: Dict[str, Any]):
 
 
 @app.post("/memories", summary="Create memories")
-def add_memory(memory_create: MemoryCreate):
-    """Store new memories."""
+async def add_memory(memory_create: MemoryCreate):
+    """
+    Store new memories in PostgreSQL and automatically sync to Neo4j.
+
+    This unified endpoint handles both vector storage (PostgreSQL) and
+    graph intelligence (Neo4j) transparently. No manual sync required.
+    """
     if not any([memory_create.user_id, memory_create.agent_id, memory_create.run_id]):
         raise HTTPException(
             status_code=400,
@@ -131,10 +191,29 @@ def add_memory(memory_create: MemoryCreate):
     }
 
     try:
+        # 1. Add to PostgreSQL/pgvector for vector search
         response = MEMORY_INSTANCE.add(
             messages=[m.model_dump() for m in memory_create.messages],
             **params
         )
+
+        # 2. Auto-sync to Neo4j for graph intelligence (async, non-blocking)
+        if response.get("results"):
+            for result in response["results"]:
+                memory_id = result.get("id")
+                memory_text = result.get("memory", "")
+                user_id = memory_create.user_id or memory_create.agent_id or memory_create.run_id
+
+                # Create background task for Neo4j sync (non-blocking)
+                asyncio.create_task(
+                    _sync_to_neo4j_with_retry(
+                        memory_id=memory_id,
+                        memory_text=memory_text,
+                        user_id=user_id,
+                        metadata=memory_create.metadata
+                    )
+                )
+
         return JSONResponse(content=response)
     except Exception as e:
         logger.exception("Error adding memory:")
@@ -189,17 +268,109 @@ def get_memory(memory_id: str, user_id: Optional[str] = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/search", summary="Search memories")
+@app.post("/search", summary="Unified intelligent search")
 def search_memories(search_req: SearchRequest):
-    """Search for memories based on a query using semantic search."""
+    """
+    Universal intelligent search - automatically enhanced with graph intelligence.
+
+    This unified endpoint:
+    1. Performs vector similarity search (pgvector)
+    2. Automatically enriches with graph context when available (Neo4j)
+    3. Re-ranks results using enhanced scoring
+
+    No need to choose between search modes - the system automatically
+    provides the best results by combining vector + graph intelligence.
+
+    Each result includes:
+    - Semantic similarity score
+    - Graph context (connections, relationships, trust)
+    - Enhanced score (re-ranked for relevance)
+    """
     try:
         params = {
             k: v for k, v in search_req.model_dump().items()
             if v is not None and k != "query"
         }
-        return MEMORY_INSTANCE.search(query=search_req.query, **params)
+
+        # Perform vector search
+        vector_results = MEMORY_INSTANCE.search(query=search_req.query, **params)
+
+        # Auto-enhance with graph context if results exist
+        if vector_results.get("results"):
+            try:
+                enriched_results = GRAPH_INTELLIGENCE.enrich_search_results_with_graph(
+                    search_results=vector_results["results"],
+                    include_graph_context=True
+                )
+
+                # Update response with enriched results
+                response = vector_results.copy()
+                response["results"] = enriched_results
+                response["search_type"] = "unified_intelligent"
+                return response
+            except Exception as graph_error:
+                # Graceful fallback if graph enrichment fails
+                logger.warning(f"Graph enrichment failed, returning vector results: {graph_error}")
+                vector_results["search_type"] = "vector_only"
+                return vector_results
+        else:
+            vector_results["search_type"] = "vector_only"
+            return vector_results
+
     except Exception as e:
         logger.exception("Error searching memories:")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/search/enhanced", summary="Enhanced search with graph context")
+def enhanced_search_memories(search_req: SearchRequest, include_graph_context: bool = True):
+    """
+    Search for memories using vector similarity and enrich results with Neo4j graph context.
+
+    This endpoint combines:
+    - Vector search (pgvector) for semantic similarity
+    - Graph intelligence (Neo4j) for relationship context
+
+    Each result includes graph_context with:
+    - Number of connections to other memories
+    - Related memory IDs (up to 3)
+    - Dependencies (DEPENDS_ON relationships)
+    - Superseded status (is this memory outdated?)
+    - Linked components (system architecture)
+    - Trust score and validations
+
+    Results are re-ranked using enhanced_score that considers:
+    - Original vector similarity score
+    - Connection boost (highly connected memories)
+    - Outdated penalty (superseded memories)
+    - Trust boost (validated/cited memories)
+    """
+    try:
+        # Perform standard vector search
+        params = {
+            k: v for k, v in search_req.model_dump().items()
+            if v is not None and k != "query"
+        }
+        vector_results = MEMORY_INSTANCE.search(query=search_req.query, **params)
+
+        # If no results or graph context not requested, return as-is
+        if not include_graph_context or not vector_results.get("results"):
+            return vector_results
+
+        # Enrich results with graph context
+        enriched_results = GRAPH_INTELLIGENCE.enrich_search_results_with_graph(
+            search_results=vector_results["results"],
+            include_graph_context=include_graph_context
+        )
+
+        # Update response with enriched results
+        response = vector_results.copy()
+        response["results"] = enriched_results
+        response["search_type"] = "enhanced_vector_graph"
+
+        return response
+    except Exception as e:
+        logger.exception("Error in enhanced search:")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -309,6 +480,36 @@ def reset_memory():
 # ============================================
 # MEMORY INTELLIGENCE - GRAPH ANALYSIS ENDPOINTS
 # ============================================
+
+@app.post("/graph/sync", summary="Sync memory to Neo4j", tags=["Memory Intelligence"])
+def sync_memory_to_neo4j(memory_id: str, user_id: str):
+    """
+    Sync a memory from PostgreSQL to Neo4j graph database.
+    This must be called before using graph operations on a memory.
+    """
+    try:
+        # Get the memory from PostgreSQL
+        params = {"user_id": user_id}
+        all_memories = MEMORY_INSTANCE.get_all(**params)
+
+        # Find the specific memory
+        memory = next((m for m in all_memories.get("results", []) if m["id"] == memory_id), None)
+        if not memory:
+            raise HTTPException(status_code=404, detail=f"Memory {memory_id} not found")
+
+        # Sync to Neo4j
+        return GRAPH_INTELLIGENCE.sync_memory_to_neo4j(
+            memory_id=memory_id,
+            memory_text=memory.get("memory", ""),
+            user_id=user_id,
+            metadata=memory.get("metadata")
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error syncing memory to Neo4j:")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/graph/link", summary="Link two memories", tags=["Memory Intelligence"])
 def link_memories(link_req: MemoryLinkRequest):

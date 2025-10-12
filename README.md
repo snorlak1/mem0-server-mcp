@@ -63,6 +63,7 @@ A production-ready, self-hosted Model Context Protocol (MCP) server that provide
 │              │  • Multi-LLM Support
 │              │  • Vector + Graph Storage
 │              │  • Memory Intelligence System
+│              │  • Async/Await Architecture with Background Tasks
 └──────┬───────┘
        │
    ┌───┴────┬──────────┬──────┐
@@ -74,6 +75,18 @@ A production-ready, self-hosted Model Context Protocol (MCP) server that provide
 │Search  │ │ligence│ │     │ │      │
 └────────┘ └────┘  └─────┘ └──────┘
 ```
+
+### ⚡ Async Architecture
+
+The Mem0 server uses FastAPI's async/await architecture for optimal performance:
+
+- **Non-blocking I/O:** Handles multiple requests concurrently without blocking
+- **Background Neo4j Sync:** Memories stored immediately in PostgreSQL, then synced to Neo4j asynchronously
+- **Retry Logic:** Automatic retry with exponential backoff (7 attempts: 1s, 2s, 4s, 8s, 16s, 32s)
+- **Immediate Response:** API returns instantly without waiting for graph sync
+- **Fault Tolerance:** If Neo4j sync fails, memory still accessible via PostgreSQL vector search
+
+This architecture ensures fast response times even when processing complex graph operations.
 
 ## 🚀 Quick Start (5 Minutes)
 

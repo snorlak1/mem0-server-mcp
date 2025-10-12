@@ -525,6 +525,71 @@ watch -n 1 './scripts/logs.sh mcp | tail -20'
 
 ---
 
+## Backend/Development Issues
+
+### Issue: "no running event loop" Error
+
+**Symptoms:**
+- Error: `RuntimeError: no running event loop`
+- HTTP 500 errors when storing memories
+- Logs show: `asyncio.create_task()` error in `add_memory` function
+
+**Error Details:**
+```python
+File "/app/main.py", line 208, in add_memory
+    asyncio.create_task(
+File "/usr/local/lib/python3.12/asyncio/tasks.py", line 417, in create_task
+    loop = events.get_running_loop()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: no running event loop
+```
+
+**Root Cause:**
+`asyncio.create_task()` was called from a synchronous function (`def add_memory`) which doesn't have an event loop. Background tasks with `asyncio.create_task()` require the parent function to be async.
+
+**Solution:**
+The `/memories` endpoint must be async to support background Neo4j sync tasks.
+
+**Fixed in:** `mem0-server/main.py:175`
+```python
+# BEFORE (incorrect - causes error)
+@app.post("/memories", summary="Create memories")
+def add_memory(memory_create: MemoryCreate):
+    ...
+    asyncio.create_task(...)  # ❌ Error: no event loop
+
+# AFTER (correct - async function)
+@app.post("/memories", summary="Create memories")
+async def add_memory(memory_create: MemoryCreate):
+    ...
+    asyncio.create_task(...)  # ✅ Works correctly
+```
+
+**How to Apply:**
+```bash
+# 1. Verify the fix is in place
+docker compose exec mem0 grep -A 2 '@app.post("/memories"' /app/main.py
+# Should show: async def add_memory
+
+# 2. If not fixed, rebuild mem0 server
+docker compose build --no-cache mem0
+docker compose restart mem0
+
+# 3. Verify fix works
+curl -X POST http://localhost:8000/memories \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [{"role": "user", "content": "test memory"}],
+    "user_id": "test_user"
+  }'
+
+# Should return 200 OK, not 500 error
+```
+
+**Note:** This fix is already included in the latest version. If you encounter this error, ensure you're running the latest code and have rebuilt the containers.
+
+---
+
 ## Getting Help
 
 1. Check service health: `./scripts/health.sh`
