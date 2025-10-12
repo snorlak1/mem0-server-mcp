@@ -480,6 +480,7 @@ curl "http://localhost:8000/memories/{memory_id}?user_id=user_b"
 # Returns: 403 Forbidden - "Access denied"
 ```
 
+
 ### Production Security Checklist
 
 1. **Change default passwords** in `.env`:
