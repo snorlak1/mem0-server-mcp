@@ -21,7 +21,7 @@ A production-ready, self-hosted Model Context Protocol (MCP) server that provide
 - 🧪 **Comprehensive Tests** - Automated test suite included
 - 📝 **Audit Logging** - Track all authentication attempts and token usage
 
-### 🧠 Memory Intelligence System (NEW!)
+### 🧠 Memory Intelligence System
 - 🔗 **Knowledge Graphs** - Link memories with typed relationships (RELATES_TO, DEPENDS_ON, SUPERSEDES, etc.)
 - 🕒 **Temporal Tracking** - Track how knowledge evolves over time
 - 🏗️ **Architecture Mapping** - Map system components and dependencies
@@ -30,6 +30,14 @@ A production-ready, self-hosted Model Context Protocol (MCP) server that provide
 - 🎯 **Topic Clustering** - Automatically detect knowledge groups
 - ⭐ **Quality Scoring** - Trust scores based on validations and citations
 - 🚀 **Intelligence Analysis** - Comprehensive health reports with actionable recommendations
+
+### 📦 Smart Text Chunking System
+- ✂️ **Semantic Chunking** - Automatically splits large text at paragraph/sentence boundaries
+- 🔄 **Context Preservation** - 150-character overlap between chunks maintains context continuity
+- ⚡ **Performance Optimization** - Prevents timeouts on large text inputs with 8B+ embedding models
+- 🏷️ **Chunk Metadata** - Full tracking with chunk index, total chunks, size, and overlap indicators
+- 🔗 **Session Continuity** - All chunks share the same `run_id` for related memory grouping
+- 🎯 **Transparent Operation** - Small texts (<1000 chars) bypass chunking for optimal performance
 
 ## 🏗️ Architecture
 
@@ -378,6 +386,78 @@ OLLAMA_EMBEDDING_DIMS=4096
 ```
 
 **Note:** pgvector's HNSW index is limited to 2000 dimensions. For larger dimensions, the system automatically disables HNSW (slower but still functional).
+
+### Smart Text Chunking
+
+The MCP server automatically handles large text inputs through intelligent semantic chunking to prevent timeouts and optimize performance.
+
+**How It Works:**
+
+- **Small texts (≤1000 characters):** Sent directly to Mem0 API (fast path, no chunking overhead)
+- **Large texts (>1000 characters):** Automatically chunked at semantic boundaries with context preservation
+
+**Chunking Strategy:**
+
+1. **Paragraph-based splitting:** Text is first split at paragraph boundaries (double newlines)
+2. **Sentence-based fallback:** If paragraphs exceed 1000 characters, they're split at sentence boundaries
+3. **Context preservation:** 150-character overlap between chunks maintains semantic continuity
+4. **Session tracking:** All chunks from the same text share a single `run_id` for relationship tracking
+
+**Chunk Metadata:**
+
+Each chunk includes comprehensive metadata for traceability:
+
+```json
+{
+  "chunk_index": 0,           // Position in sequence (0-indexed)
+  "total_chunks": 5,          // Total number of chunks in this text
+  "chunk_size": 982,          // Number of characters in this chunk
+  "has_overlap": true         // Whether this chunk includes overlap from previous chunk
+}
+```
+
+**Configuration:**
+
+Chunking parameters are configurable via `.env` file:
+
+```bash
+# Smart Text Chunking Configuration
+CHUNK_MAX_SIZE=1000         # Maximum characters per chunk
+CHUNK_OVERLAP_SIZE=150      # Overlap between chunks for context continuity
+```
+
+To adjust chunking behavior:
+1. Edit `.env` file with your preferred values
+2. Restart MCP server: `docker compose restart mcp`
+
+**Benefits:**
+
+- ✅ **Prevents timeouts** - No more 30-second timeout errors with large code snippets or documentation
+- ✅ **Maintains context** - 150-character overlap ensures semantic relationships aren't lost at boundaries
+- ✅ **Transparent operation** - Users don't need to manually split text; it happens automatically
+- ✅ **Performance optimized** - Small texts bypass chunking entirely for zero overhead
+- ✅ **Full traceability** - Metadata allows reconstruction and tracking of chunked memories
+- ✅ **Extended timeout** - MCP client timeout increased from 30s to 180s for large text processing
+
+**Implementation Details:**
+
+- **Location:** `mcp-server/text_chunker.py` (chunking algorithm)
+- **Integration:** `mcp-server/main.py` in `add_coding_preference()` function
+- **Transport:** All chunks sent sequentially via HTTP to Mem0 REST API
+- **Storage:** Each chunk stored as separate memory with linking metadata
+
+**Example:**
+
+```python
+# User stores large code file (5000 characters)
+# System automatically:
+# 1. Detects text > 1000 chars
+# 2. Splits into 5 semantic chunks at paragraph boundaries
+# 3. Adds 150-char overlap between chunks
+# 4. Sends chunks sequentially with metadata
+# 5. All chunks share same run_id for session tracking
+# 6. Returns success message indicating chunking occurred
+```
 
 ## 📊 Endpoints
 

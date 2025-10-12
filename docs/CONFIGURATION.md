@@ -338,12 +338,201 @@ MCP_PORT=8080
 MCP_HOST=0.0.0.0
 
 # Timeout for HTTP requests to Mem0 API (seconds)
-# REQUEST_TIMEOUT=30
+# Extended to 180s to support large text chunking
+REQUEST_TIMEOUT=180
 ```
 
 **External Access:**
 ```
-http://localhost:8080/sse  # SSE endpoint for Claude Code
+http://localhost:8080/mcp  # HTTP Stream endpoint (recommended)
+http://localhost:8080/sse  # SSE endpoint (legacy)
+```
+
+---
+
+## Smart Text Chunking Configuration
+
+### Overview
+
+The MCP server automatically chunks large text inputs to prevent timeouts and optimize performance. This feature is built-in and requires no configuration for basic usage.
+
+### Default Settings
+
+**Location:** `mcp-server/text_chunker.py`
+
+```python
+# Chunking parameters (defaults)
+max_chunk_size = 1000     # Maximum characters per chunk
+overlap_size = 150        # Overlap between chunks for context
+```
+
+### How Chunking Works
+
+```bash
+# Text ≤ 1000 characters
+→ Sent directly to Mem0 API (fast path, no chunking)
+
+# Text > 1000 characters
+→ Automatic semantic chunking enabled:
+  1. Split by paragraphs (double newlines)
+  2. If paragraph > 1000 chars, split by sentences
+  3. Add 150-char overlap between chunks
+  4. Send sequentially with shared run_id
+  5. Track with comprehensive metadata
+```
+
+### Timeout Configuration
+
+```bash
+# .env or docker-compose.yml
+REQUEST_TIMEOUT=180   # Seconds (default: 180)
+```
+
+**Why 180 seconds?**
+- Allows processing of large text files (5000+ characters)
+- Handles 5-10 chunks with embedding generation per chunk
+- Prevents timeout errors with 8B embedding models
+
+### Customizing Chunking Behavior
+
+**Option 1: Environment Variables (Recommended)**
+
+```bash
+# Edit .env file
+CHUNK_MAX_SIZE=1000         # Maximum characters per chunk
+CHUNK_OVERLAP_SIZE=150      # Overlap between chunks
+
+# Restart MCP server
+docker compose restart mcp
+```
+
+**Option 2: Edit text_chunker.py (Advanced)**
+
+```python
+# mcp-server/text_chunker.py
+# Note: Environment variables override these defaults
+
+def chunk_text_semantic(
+    text: str,
+    max_chunk_size: int = None,    # Defaults to CHUNK_MAX_SIZE from .env
+    overlap_size: int = None        # Defaults to CHUNK_OVERLAP_SIZE from .env
+) -> List[Dict[str, any]]:
+```
+
+### Configuration Trade-offs
+
+| Setting | Value | Pros | Cons | Use Case |
+|---------|-------|------|------|----------|
+| `max_chunk_size` | **1000** (default) | Balanced performance | - | Most users |
+| | 500 | More chunks, safer | Slower, more overhead | Very slow embeddings |
+| | 2000 | Fewer chunks, faster | Timeout risk | Fast embeddings |
+| `overlap_size` | **150** (default) | Good context | - | Most users |
+| | 0 | No duplicate data | Loss of context | Unrelated chunks |
+| | 300 | Better context | More duplicate storage | Critical context |
+
+### Performance Impact
+
+```bash
+# Small text (≤1000 chars)
+Time: 2-5s (no chunking overhead)
+Storage: 1 memory entry
+Processing: Single request
+
+# Large text (5000 chars)
+Time: 15-45s (5 chunks × 3-9s each)
+Storage: 5 memory entries (linked by run_id)
+Processing: 5 sequential requests with metadata
+```
+
+### Monitoring Chunking
+
+```bash
+# Watch chunking in real-time
+./scripts/logs.sh mcp -f
+
+# Look for these log messages:
+# 📦 Large text detected: splitting into 5 semantic chunks
+# 📤 Sending chunk 1/5 (982 chars)
+# ✅ Chunk 1/5 stored successfully
+# 📤 Sending chunk 2/5 (1015 chars)
+# ✅ Chunk 2/5 stored successfully
+# ...
+# ✅ Successfully stored 5 chunks for large text
+```
+
+### Chunk Metadata
+
+Each chunk includes:
+
+```json
+{
+  "chunk_index": 0,           // 0-indexed position
+  "total_chunks": 5,          // Total number of chunks
+  "chunk_size": 982,          // Characters in this chunk
+  "has_overlap": true,        // Overlap from previous chunk
+  "run_id": "uuid"            // Shared across all chunks
+}
+```
+
+### Disabling Chunking (Not Recommended)
+
+To disable chunking (for debugging only):
+
+```python
+# mcp-server/main.py
+# Comment out chunking logic and always use single request
+
+# NOT RECOMMENDED: May cause timeouts on large text
+```
+
+### Best Practices
+
+1. **Keep defaults** - 1000/150 is optimized for most use cases
+2. **Monitor logs** - Watch for chunking activity
+3. **Use fast embeddings** - Smaller models (768d) process chunks faster
+4. **Test large files** - Verify performance with your typical text size
+5. **Adjust timeout** - Increase `REQUEST_TIMEOUT` if still timing out
+
+### Troubleshooting
+
+**Issue: Chunking still times out**
+
+```bash
+# Increase timeout further
+REQUEST_TIMEOUT=300   # 5 minutes
+
+# Or use smaller chunks
+max_chunk_size = 500
+```
+
+**Issue: Too many chunks created**
+
+```bash
+# Increase chunk size
+max_chunk_size = 1500
+```
+
+**Issue: Context lost between chunks**
+
+```bash
+# Increase overlap
+overlap_size = 250
+```
+
+### Related Performance Settings
+
+```bash
+# Combine with these for best results:
+
+# Fast embedding model
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+OLLAMA_EMBEDDING_DIMS=768
+
+# Pre-warm Ollama models
+./scripts/warmup.sh
+
+# Increased timeout for chunking
+REQUEST_TIMEOUT=180
 ```
 
 ---
@@ -597,6 +786,10 @@ MCP_HOST=0.0.0.0
 # === Project Isolation ===
 PROJECT_ID_MODE=auto                          # auto | manual | global
 DEFAULT_USER_ID=default                       # Used in manual/global modes
+
+# === Smart Text Chunking ===
+CHUNK_MAX_SIZE=1000                           # Maximum characters per chunk
+CHUNK_OVERLAP_SIZE=150                        # Overlap between chunks in characters
 
 # === Docker ===
 COMPOSE_PROJECT_NAME=mem0-mcp

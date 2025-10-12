@@ -17,7 +17,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY main.py config.py auth.py ./
+COPY main.py config.py auth.py text_chunker.py ./
 
 # Expose MCP server port
 EXPOSE 8080

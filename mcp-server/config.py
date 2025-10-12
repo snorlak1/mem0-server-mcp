@@ -26,6 +26,10 @@ POSTGRES_DB = os.getenv("POSTGRES_DB", "postgres")
 POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "postgres")
 
+# Smart Text Chunking Configuration
+CHUNK_MAX_SIZE = int(os.getenv("CHUNK_MAX_SIZE", "1000"))
+CHUNK_OVERLAP_SIZE = int(os.getenv("CHUNK_OVERLAP_SIZE", "150"))
+
 # Project Isolation Mode
 # - "auto": Auto-detect project from working directory (default)
 # - "manual": Use DEFAULT_USER_ID explicitly

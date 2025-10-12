@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from mem0 import Memory
 import config
 from graph_intelligence import MemoryIntelligence
+from truncate_embedder import TruncateEmbedder
 
 # Load environment variables
 load_dotenv()
@@ -29,10 +30,20 @@ logger = logging.getLogger(__name__)
 
 # Initialize Mem0 with configuration
 logger.info(f"Initializing Mem0 with provider: {config.LLM_PROVIDER}")
-logger.info(f"Embedding dimensions: {config.OLLAMA_EMBEDDING_DIMS if config.LLM_PROVIDER == 'ollama' else config.OPENAI_EMBEDDING_DIMS}")
+
+target_dims = config.OLLAMA_EMBEDDING_DIMS if config.LLM_PROVIDER == 'ollama' else config.OPENAI_EMBEDDING_DIMS
+logger.info(f"Embedding dimensions: {target_dims}")
 logger.info(f"HNSW enabled: {config.get_vector_store_config()['config']['hnsw']}")
 
 MEMORY_INSTANCE = Memory.from_config(config.get_mem0_config())
+
+# Wrap embedder with truncation for MRL models (e.g., qwen3-embedding:4b)
+if config.LLM_PROVIDER == 'ollama' and 'qwen3-embedding' in config.OLLAMA_EMBEDDING_MODEL:
+    logger.info(f"Wrapping embedder with TruncateEmbedder for MRL support (target: {target_dims} dims)")
+    MEMORY_INSTANCE.embedding_model = TruncateEmbedder(
+        MEMORY_INSTANCE.embedding_model,
+        target_dims=target_dims
+    )
 
 # Initialize Memory Intelligence System
 GRAPH_INTELLIGENCE = MemoryIntelligence(

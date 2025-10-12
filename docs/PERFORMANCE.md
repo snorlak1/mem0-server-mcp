@@ -133,6 +133,142 @@ chmod +x scripts/warmup.sh
 
 ---
 
+### 4. Smart Text Chunking (Automatic)
+
+**Impact:** Eliminates timeouts on large text inputs
+
+The MCP server automatically handles large text inputs through intelligent semantic chunking. This feature prevents timeout errors when storing large code files, documentation, or long-form content.
+
+**How It Works:**
+
+```python
+# Automatic chunking for text > 1000 characters
+# Location: mcp-server/text_chunker.py
+
+max_chunk_size = 1000     # Characters per chunk
+overlap_size = 150        # Overlap for context preservation
+```
+
+**Processing Flow:**
+
+1. **Small text (≤1000 chars):** Sent directly (fast path, no overhead)
+2. **Large text (>1000 chars):** Automatically chunked with:
+   - Semantic boundaries (paragraphs → sentences)
+   - 150-character overlap between chunks
+   - Shared `run_id` for session tracking
+   - Full metadata for traceability
+
+**Performance Benefits:**
+
+```bash
+# Before chunking (large text)
+Status: ❌ Timeout after 30s
+Result: Failed to store memory
+
+# After chunking (large text)
+Status: ✅ Completed in 45s
+Result: Stored as 5 chunks with metadata
+Chunks: [Part 1/5] → [Part 5/5]
+```
+
+**Chunking Strategy:**
+
+```
+Input: 5000-character code file
+
+Step 1: Split by paragraphs (double newlines)
+  ↓
+Step 2: If paragraph > 1000 chars, split by sentences
+  ↓
+Step 3: Add 150-char overlap between chunks
+  ↓
+Result: 5 semantic chunks with context preservation
+
+Chunk 1: chars 0-1000 (no overlap)
+Chunk 2: chars 850-1850 (150 overlap from chunk 1)
+Chunk 3: chars 1700-2700 (150 overlap from chunk 2)
+Chunk 4: chars 2550-3550 (150 overlap from chunk 3)
+Chunk 5: chars 3400-5000 (150 overlap from chunk 4)
+```
+
+**Timeout Configuration:**
+
+```python
+# mcp-server/main.py
+http_client = httpx.AsyncClient(
+    base_url=config.MEM0_API_URL,
+    timeout=180.0  # Extended from 30s to 180s
+)
+```
+
+**Chunk Metadata:**
+
+Each chunk includes comprehensive tracking:
+
+```json
+{
+  "chunk_index": 0,           // Position (0-indexed)
+  "total_chunks": 5,          // Total chunks
+  "chunk_size": 982,          // Characters in chunk
+  "has_overlap": true,        // Has overlap from previous
+  "run_id": "uuid-shared"     // Same for all chunks
+}
+```
+
+**When Chunking Triggers:**
+
+- ✅ **Triggered:** Code files, documentation, long explanations (>1000 chars)
+- ❌ **Bypassed:** Short snippets, commands, brief notes (≤1000 chars)
+
+**Benefits:**
+
+1. **No Timeouts** - Large text no longer fails after 30s
+2. **Context Preserved** - 150-char overlap maintains semantic continuity
+3. **Semantic Boundaries** - Splits at paragraphs/sentences, never mid-word
+4. **Transparent** - Automatic, users don't need to manually split text
+5. **Traceable** - Full metadata for reconstruction
+6. **Zero Overhead** - Small texts bypass chunking entirely
+
+**Monitoring Chunking:**
+
+Check MCP server logs to see chunking in action:
+
+```bash
+./scripts/logs.sh mcp
+
+# Output:
+# 📦 Large text detected: splitting into 5 semantic chunks
+# 📤 Sending chunk 1/5 (982 chars)
+# ✅ Chunk 1/5 stored successfully
+# 📤 Sending chunk 2/5 (1015 chars)
+# ✅ Chunk 2/5 stored successfully
+# ...
+# ✅ Successfully stored 5 chunks for large text
+```
+
+**Tuning Chunking (Advanced):**
+
+If you need to adjust chunking behavior, edit `mcp-server/text_chunker.py`:
+
+```python
+def chunk_text_semantic(
+    text: str,
+    max_chunk_size: int = 1000,    # Increase for fewer chunks
+    overlap_size: int = 150         # Increase for more context
+) -> List[Dict[str, any]]:
+```
+
+**Trade-offs:**
+
+- ✅ Larger `max_chunk_size` (e.g., 2000): Fewer chunks, faster processing
+- ❌ Larger `max_chunk_size`: Higher risk of timeouts per chunk
+- ✅ Larger `overlap_size` (e.g., 300): Better context preservation
+- ❌ Larger `overlap_size`: More duplicate content stored
+
+**Recommended settings:** Keep defaults (1000/150) for balanced performance.
+
+---
+
 ## LLM Provider Comparison
 
 ### Ollama (Self-Hosted)

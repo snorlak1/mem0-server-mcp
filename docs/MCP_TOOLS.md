@@ -18,7 +18,7 @@ All tools automatically use the current project directory as the `user_id` when 
 
 ## 1. add_coding_preference
 
-Store a new coding preference or memory.
+Store a new coding preference or memory with automatic smart chunking for large text.
 
 ### Usage in Claude Code
 
@@ -34,29 +34,100 @@ Store a new coding preference or memory.
 "Save this code snippet: def fibonacci(n): return n if n <= 1 else fibonacci(n-1) + fibonacci(n-2)"
 ```
 
+```
+"Store this entire code file in memory: [paste large file]"
+```
+
 ### Tool Parameters
 
 ```python
 {
-  "text": str  # The content to store
+  "text": str  # The content to store (any size)
 }
 ```
 
 ### What Happens
 
+**Small Text (≤1000 characters):**
 1. Tool receives the text
 2. Adds current `user_id` (project directory hash)
-3. Sends to Mem0 API at `/memories`
+3. Sends directly to Mem0 API at `/memories`
 4. LLM processes and stores the memory
 5. Returns confirmation with memory ID
 
-### Example Response
+**Large Text (>1000 characters):**
+1. Tool receives the text
+2. **Automatically chunks** text at semantic boundaries (paragraphs/sentences)
+3. Adds 150-character overlap between chunks for context preservation
+4. Sends each chunk sequentially with shared `run_id`
+5. Each chunk includes metadata (index, total, size, overlap)
+6. Returns confirmation with all chunk IDs
 
+### Smart Chunking
+
+The tool automatically handles large text inputs (code files, documentation, long explanations) by splitting them intelligently:
+
+**Chunking Strategy:**
+- **Threshold:** Text > 1000 characters triggers chunking
+- **Boundaries:** Splits at paragraphs (double newlines) first
+- **Fallback:** If paragraph too large, splits at sentences
+- **Overlap:** 150 characters overlap between chunks preserves context
+- **Session:** All chunks share same `run_id` for relationship tracking
+
+**Example: 5000-character code file**
+```
+Input: 5000 chars
+     ↓
+Chunk 1: [Part 1/5] chars 0-1000
+Chunk 2: [Part 2/5] chars 850-1850 (150 overlap)
+Chunk 3: [Part 3/5] chars 1700-2700 (150 overlap)
+Chunk 4: [Part 4/5] chars 2550-3550 (150 overlap)
+Chunk 5: [Part 5/5] chars 3400-5000 (150 overlap)
+     ↓
+5 memories stored, linked by run_id
+```
+
+### Example Responses
+
+**Small text:**
 ```
 ✅ Successfully added preference for project '/home/user/myproject'
    Memory ID: mem_abc123xyz
    Content: "User prefers Tailwind CSS for styling"
 ```
+
+**Large text (chunked):**
+```
+✅ Successfully added large preference (5 chunks) for project '/home/user/myproject':
+{
+  "status": "success",
+  "total_chunks": 5,
+  "chunks_stored": 5,
+  "project_id": "prj_a1b2c3d4",
+  "run_id": "550e8400-e29b-41d4-a716-446655440000",
+  "chunk_ids": [
+    "mem_abc123xyz",
+    "mem_def456uvw",
+    "mem_ghi789rst",
+    "mem_jkl012mno",
+    "mem_pqr345stu"
+  ]
+}
+```
+
+### Performance
+
+**Small text:**
+- Time: 2-5 seconds
+- Storage: 1 memory entry
+- Overhead: None
+
+**Large text (5000 chars):**
+- Time: 15-45 seconds (5 chunks × 3-9s each)
+- Storage: 5 memory entries (linked by run_id)
+- Overhead: Automatic, transparent to user
+
+**Timeout protection:** MCP client timeout extended to 180 seconds to accommodate large text processing.
 
 ### Error Handling
 
@@ -64,12 +135,19 @@ Store a new coding preference or memory.
 ❌ Error adding preference: Failed to connect to Mem0 server
 ```
 
+```
+❌ Error adding preference: HTTP 408 - Timeout
+   (Try using smaller text or check embedding model performance)
+```
+
 ### Best Practices
 
-- Be specific: "I use React 18 with TypeScript" vs "I use React"
-- Include context: "For API calls, I prefer axios over fetch"
-- Store implementation details: Include code snippets, patterns, conventions
-- Tag categories: "Testing: I use pytest with fixtures"
+- **Be specific:** "I use React 18 with TypeScript" vs "I use React"
+- **Include context:** "For API calls, I prefer axios over fetch"
+- **Store implementation details:** Include code snippets, patterns, conventions
+- **Tag categories:** "Testing: I use pytest with fixtures"
+- **Store large files:** Entire code files are automatically chunked (no size limit)
+- **Maintain context:** The 150-char overlap ensures context isn't lost between chunks
 
 ---
 

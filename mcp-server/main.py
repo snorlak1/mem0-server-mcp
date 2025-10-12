@@ -45,6 +45,7 @@ from starlette.routing import Mount, Route, WebSocketRoute
 
 import config
 from auth import TokenAuthenticator
+from text_chunker import chunk_text_semantic, add_chunk_markers
 
 # Context variables for authentication
 auth_token: ContextVar[str] = ContextVar('auth_token', default=None)
@@ -149,13 +150,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
 )
 async def add_coding_preference(text: str) -> str:
     """
-    Add a new coding preference to mem0.
+    Add a new coding preference to mem0 with smart chunking for large texts.
 
     Args:
         text: The content to store in memory, including code, documentation, and context
 
     Note: Memories are automatically scoped to the current project.
     Authentication is handled automatically via MCP headers.
+    Large texts (>1000 chars) are automatically chunked with semantic boundaries and overlap.
     """
     # Validate authentication from headers
     auth_result = await validate_auth()
@@ -167,32 +169,77 @@ async def add_coding_preference(text: str) -> str:
         # Generate unique run_id for this memory operation (required by mem0 for session tracking)
         run_id = str(uuid.uuid4())
 
-        payload = {
-            "messages": [{"role": "user", "content": text}],
-            "user_id": uid,
-            "run_id": run_id
-        }
+        # Chunk text intelligently (handles both small and large texts)
+        # Uses CHUNK_MAX_SIZE and CHUNK_OVERLAP_SIZE from config/env
+        chunks = chunk_text_semantic(text, max_chunk_size=config.CHUNK_MAX_SIZE, overlap_size=config.CHUNK_OVERLAP_SIZE)
 
-        logger.info(f"📤 Sending memory request to mem0 API with run_id={run_id}")
-        response = await http_client.post("/memories", json=payload)
-        logger.info(f"📥 Received response from mem0 API: status={response.status_code}")
-        response.raise_for_status()
+        if len(chunks) == 1 and not chunks[0]["is_chunked"]:
+            # Small text - send as-is (fast path)
+            payload = {
+                "messages": [{"role": "user", "content": text}],
+                "user_id": uid,
+                "run_id": run_id
+            }
 
-        result = response.json()
-        logger.info(f"✅ Successfully added memory: {result}")
-        return f"✅ Successfully added preference for project '{uid}': {json.dumps(result, indent=2)}"
+            logger.info(f"📤 Sending memory request (single chunk) with run_id={run_id}")
+            response = await http_client.post("/memories", json=payload)
+            response.raise_for_status()
+
+            result = response.json()
+            logger.info(f"✅ Successfully added memory")
+            return f"✅ Successfully added preference for project '{uid}': {json.dumps(result, indent=2)}"
+
+        else:
+            # Large text - send chunks sequentially with metadata
+            logger.info(f"📦 Large text detected: splitting into {len(chunks)} semantic chunks")
+            results = []
+
+            for chunk_data in chunks:
+                # Add chunk markers for context
+                chunk_text = add_chunk_markers(chunk_data)
+
+                payload = {
+                    "messages": [{"role": "user", "content": chunk_text}],
+                    "user_id": uid,
+                    "run_id": run_id,
+                    "metadata": {
+                        "chunk_index": chunk_data["chunk_index"],
+                        "total_chunks": chunk_data["total_chunks"],
+                        "chunk_size": chunk_data["chunk_size"],
+                        "has_overlap": chunk_data.get("has_overlap", False)
+                    }
+                }
+
+                logger.info(f"📤 Sending chunk {chunk_data['chunk_index'] + 1}/{chunk_data['total_chunks']} ({chunk_data['chunk_size']} chars)")
+                response = await http_client.post("/memories", json=payload)
+                response.raise_for_status()
+
+                chunk_result = response.json()
+                results.append(chunk_result)
+                logger.info(f"✅ Chunk {chunk_data['chunk_index'] + 1}/{chunk_data['total_chunks']} stored successfully")
+
+            # Return summary of all chunks stored
+            summary = {
+                "status": "success",
+                "total_chunks": len(chunks),
+                "chunks_stored": len(results),
+                "project_id": uid,
+                "run_id": run_id,
+                "chunk_ids": [r.get("id") for r in results if "id" in r]
+            }
+
+            logger.info(f"✅ Successfully stored {len(chunks)} chunks for large text")
+            return f"✅ Successfully added large preference ({len(chunks)} chunks) for project '{uid}':\n{json.dumps(summary, indent=2)}"
+
     except httpx.HTTPStatusError as e:
         error_detail = e.response.text if hasattr(e.response, 'text') else str(e)
         logger.error(f"HTTP error adding preference: {e.response.status_code} - {error_detail}")
-        logger.error(f"Request payload was: {payload}")
         return f"❌ Error adding preference: HTTP {e.response.status_code} - {error_detail}"
     except httpx.HTTPError as e:
         logger.error(f"HTTP error adding preference: {e}", exc_info=True)
-        logger.error(f"Request payload was: {payload}")
         return f"❌ Error adding preference: {str(e)}"
     except Exception as e:
         logger.error(f"Error adding preference: {e}", exc_info=True)
-        logger.error(f"Request payload was: {payload}")
         return f"❌ Error adding preference: {str(e)}"
 
 
@@ -819,9 +866,9 @@ def create_starlette_app(mcp_server: Server, *, debug: bool = False) -> Starlett
         authenticator = TokenAuthenticator(db_pool)
         logger.info("✅ Token authenticator initialized")
 
-        # Initialize HTTP client for Mem0 API
-        http_client = httpx.AsyncClient(base_url=config.MEM0_API_URL, timeout=30.0)
-        logger.info("✅ HTTP client initialized")
+        # Initialize HTTP client for Mem0 API with extended timeout for large text chunking
+        http_client = httpx.AsyncClient(base_url=config.MEM0_API_URL, timeout=180.0)
+        logger.info("✅ HTTP client initialized with 180s timeout")
 
         # Start FastMCP session manager for HTTP Stream transport
         # This MUST be running for HTTP Stream requests to work
