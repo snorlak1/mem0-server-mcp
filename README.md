@@ -1,6 +1,6 @@
 # 🧠 Mem0 MCP Server - Self-Hosted Memory for AI
 
-A production-ready, self-hosted Model Context Protocol (MCP) server that provides persistent memory for Claude Code and other AI assistants. Built with Docker Compose for easy deployment.
+A production-ready, self-hosted Model Context Protocol (MCP) server that provides persistent, intelligent memory for Claude Code and other AI assistants. Features async/await architecture, knowledge graph intelligence, smart text chunking, and enterprise-grade security. Built with Docker Compose for one-command deployment.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Docker](https://img.shields.io/badge/docker-compose-blue.svg)](https://docs.docker.com/compose/)
